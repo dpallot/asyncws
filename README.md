@@ -11,8 +11,7 @@ It implements [RFC 6455](https://tools.ietf.org/html/rfc6455), passes the [Autob
 To install the package: ``python3 setup.py install``
 
 <h3>API Documentation</h3>
-
-[asyncws - Asynchronous websockets for asyncio](https://async-websockets.readthedocs.org/)
+Refer to [asyncws API Documentation](https://async-websockets.readthedocs.org/) for more information. 
 
 <h3>Example</h3>
 
