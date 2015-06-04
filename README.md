@@ -1,9 +1,15 @@
 # async-websockets
 
+<h3>About</h3>
+
 ``asyncws`` is a library for developing websocket applications in Python 3. 
 It implements [RFC 6455](https://tools.ietf.org/html/rfc6455), passes the [Autobahn Testsuite](http://autobahn.ws/testsuite/) and supports SSL/TSL out of the box.
 
 Based on [PEP 3156](https://www.python.org/dev/peps/pep-3156/) and coroutines it makes it easy to write highly concurrent websocket based applications. 
+
+<h3>Installation</h3>
+
+To install the package: ``python3 setup.py install``
 
 Echo server example:
 `````python
@@ -24,7 +30,7 @@ Echo server example:
    asyncio.get_event_loop().run_forever()
 `````
 
-Corresponding echo client example::
+Corresponding echo client example:
 `````python
     import asyncio
     import asyncws
