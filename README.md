@@ -10,6 +10,10 @@ It implements [RFC 6455](https://tools.ietf.org/html/rfc6455), passes the [Autob
 
 To install the package: ``python3 setup.py install``
 
+<h3>API Documentation</h3>
+
+[asyncws - Asynchronous websockets for asyncio](https://async-websockets.readthedocs.org/)
+
 <h3>Example</h3>
 
 Echo server:
