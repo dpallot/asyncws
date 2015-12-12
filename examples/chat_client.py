@@ -4,10 +4,10 @@ import sys
 
 @asyncio.coroutine
 def stdin():
-    reader = asyncio.StreamReader() 
+    reader = asyncio.StreamReader()
     yield from asyncio.get_event_loop().connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
     return reader
-    
+
 @asyncio.coroutine
 def chat_recv(websocket):
     while True:
@@ -19,6 +19,7 @@ def chat_recv(websocket):
 @asyncio.coroutine
 def chat_send(websocket):
     reader = yield from stdin()
+    print ("Welcome, type some text!")
     while True:
         msg = yield from reader.readline()
         yield from websocket.send(msg.decode('utf-8').strip('\r\n'), True)
