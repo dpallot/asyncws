@@ -5,9 +5,6 @@ clients = []
 clients_lock = asyncio.Lock()
 
 def chat(websocket):
-
-    client_copy = None
-
     with (yield from clients_lock):
         client_copy = list(clients)
         clients.append(websocket)
@@ -41,6 +38,14 @@ def chat(websocket):
         for client in client_copy:
             yield from client.send("Disconnected %s" % peer)
 
-server = asyncws.start_server(chat, '127.0.0.1', 8000)
-asyncio.get_event_loop().run_until_complete(server)
-asyncio.get_event_loop().run_forever()
+
+loop = asyncio.get_event_loop()
+server = loop.run_until_complete(
+    asyncws.start_server(chat, '127.0.0.1', 8000))
+try:
+    loop.run_forever()
+except KeyboardInterrupt as e:
+    server.close()
+    loop.run_until_complete(server.wait_closed())
+finally:
+    loop.close()

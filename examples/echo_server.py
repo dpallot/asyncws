@@ -9,6 +9,14 @@ def echo(websocket):
             break
         yield from websocket.send(frame)
 
-server = asyncws.start_server(echo, '127.0.0.1', 8000)
-asyncio.get_event_loop().run_until_complete(server)
-asyncio.get_event_loop().run_forever()
+
+loop = asyncio.get_event_loop()
+server = loop.run_until_complete(
+    asyncws.start_server(echo, '127.0.0.1', 8000))
+try:
+    loop.run_forever()
+except KeyboardInterrupt as e:
+    server.close()
+    loop.run_until_complete(server.wait_closed())
+finally:
+    loop.close()

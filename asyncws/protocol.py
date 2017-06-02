@@ -1,3 +1,4 @@
+import sys
 import asyncio
 import base64
 import hashlib
@@ -5,14 +6,13 @@ import codecs
 import struct
 import random
 import urllib.parse
-from io import BytesIO, StringIO
+from io import BytesIO
 from http.client import HTTPResponse
 from http.server import BaseHTTPRequestHandler
 
 from .exceptions import *
 
-__all__ = ['_WEBSOCKET_MAX_HEADER', '_WEBSOCKET_MAX_PAYLOAD', '_WEBSOCKET_HANDSHAKE_TIMEOUT',
-            'Websocket', 'start_server', 'connect']
+__all__ = ['Websocket', 'start_server', 'connect']
 
 _REQUEST = (
     'GET %(path)s HTTP/1.1\r\n'
@@ -40,10 +40,6 @@ _CLOSE = 0x8
 _PING = 0x9
 _PONG = 0xA
 
-_WEBSOCKET_MAX_PAYLOAD = 33554432
-_WEBSOCKET_MAX_HEADER = 65536
-_WEBSOCKET_HANDSHAKE_TIMEOUT = 10
-
 _VALID_STATUS_CODES = [1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 3000, 3999, 4000, 4999]
 
 class FakeSocket():
@@ -52,6 +48,7 @@ class FakeSocket():
 
     def makefile(self, *args, **kwargs):
         return self._file
+
 
 class HTTPRequest(BaseHTTPRequestHandler):
     def __init__(self, request):
@@ -64,6 +61,7 @@ class HTTPRequest(BaseHTTPRequestHandler):
         self.error_code = code
         self.error_message = message
 
+
 class Websocket:
     """
     Class that wraps the websocket protocol.
@@ -71,7 +69,8 @@ class Websocket:
     :param writer: Access to ``get_extra_info()``. See `StreamWriter. \
         <https://docs.python.org/3.4/library/asyncio-stream.html#asyncio.StreamWriter>`_
     :param request: HTTP request that arrives at the server during handshaking. \
-        See `BaseHTTPRequestHandler. <https://docs.python.org/3.4/library/http.server.html#http.server.BaseHTTPRequestHandler>`_ \
+        See `BaseHTTPRequestHandler. \
+        <https://docs.python.org/3.4/library/http.server.html#http.server.BaseHTTPRequestHandler>`_ \
         Set to ``None`` if it's a client websocket.
     :param response: HTTP response that arrives at the client after handshaking is complete. \
         See `HTTPResponse. <https://docs.python.org/3.4/library/http.client.html#http.client.HTTPResponse>`_ \
@@ -80,6 +79,8 @@ class Websocket:
     def __init__(self, reader, writer):
         self.writer = writer
         self._reader = reader
+        self._queue = asyncio.Queue()
+        self._recv_task = None
         self.response = None
         self.request = None
         self._closed = False
@@ -87,30 +88,20 @@ class Websocket:
         self.status = 1000
         self.reason = ''
 
-    @asyncio.coroutine
-    def handshake(self):
-        """
-        This function allows server based websocket applications to initiate a handshake with a client endpoint.
-        To initiate a manual handshake ``auto_handshake = False`` must be passed to ``start_server``::
 
-            @asyncio.coroutine
-            def echo(websocket):
-                yield from websocket.handshake()
-                while True:
-                    frame = yield from websocket.recv()
-                    if frame is None:
-                        break
-                    yield from websocket.send(frame)
+    def destroy(self):
+        self.writer.close()
 
-            asyncws.start_server(echo, '127.0.0.1', 8000, auto_handshake = False)
-
-        :raises Exception: When there is an error in the handshake.
-        """
-        request = yield from handshake_with_client(self._reader, self.writer)
-        self.request = request
 
     @asyncio.coroutine
-    def close(self, status = 1000, reason = ''):
+    def wait_closed(self):
+        if self._recv_task:
+            self._recv_task.cancel()
+            yield from self._recv_task
+
+
+    @asyncio.coroutine
+    def close(self, status=1000, reason=''):
         """
         Start the close handhake by sending a close frame to the websocket endpoint. \
             Once the endpoint responds with a corresponding close the underlying transport is closed.
@@ -126,8 +117,9 @@ class Websocket:
             self._closed = True
             yield from send_close_frame(self.writer, status, reason, self._mask)
 
+
     @asyncio.coroutine
-    def send(self, data, flush = False):
+    def send(self, data, flush=False):
         """
         Send a data frame to websocket endpoint.
 
@@ -144,8 +136,9 @@ class Websocket:
 
         yield from send_frame(self.writer, False, opcode, payload, self._mask, flush)
 
+
     @asyncio.coroutine
-    def send_fragment_start(self, data, flush = False):
+    def send_fragment_start(self, data, flush=False):
         payload = data
         opcode = _BINARY
         if isinstance(data, str):
@@ -154,47 +147,56 @@ class Websocket:
 
         yield from send_frame(self.writer, True, opcode, payload, self._mask, flush)
 
+
     @asyncio.coroutine
-    def send_fragment(self, data, flush = False):
+    def send_fragment(self, data, flush=False):
         payload = data
         if isinstance(data, str):
             payload = data.encode('utf-8')
 
         yield from send_frame(self.writer, True, _STREAM, payload, self._mask, flush)
 
+
     @asyncio.coroutine
-    def send_fragment_end(self, data, flush = False):
+    def send_fragment_end(self, data, flush=False):
         payload = data
         if isinstance(data, str):
             payload = data.encode('utf-8')
 
         yield from send_frame(self.writer, False, _STREAM, payload, self._mask, flush)
 
+
     @asyncio.coroutine
-    def ping(self, data, flush = False):
+    def ping(self, data, flush=False):
         payload = data
         if isinstance(data, str):
             payload = data.encode('utf-8')
 
         yield from send_frame(self.writer, False, _PING, payload, self._mask, flush)
 
+
     @asyncio.coroutine
     def recv(self):
         """
-        Recieve websocket frame from endpoint.
+        Receive websocket frame from endpoint.
 
         This coroutine will block until a complete frame is ready.
 
         :return: Websocket text or data frame on success. \
             Returns ``None`` if the connection is closed or there is an error.
         """
-        item = yield from recv_entire_frame(self)
+
+        if self._closed is True:
+            return None
+
+        item = yield from self._queue.get()
+        self._queue.task_done()
         return item
 
 
 @asyncio.coroutine
-def recv_entire_frame(ws):
-
+def recv_entire_frame(ws, **kwds):
+    max_payload = kwds.get('max_payload', 33554432)
     try:
         _frag_start = False
         _frag_type = _BINARY
@@ -202,7 +204,7 @@ def recv_entire_frame(ws):
         _frag_decoder = codecs.getincrementaldecoder('utf-8')()
 
         while True:
-            fin, opcode, length, frame = yield from recv_frame(ws._reader)
+            fin, opcode, length, frame = yield from recv_frame(ws._reader, max_payload)
             if opcode == _CLOSE:
                 status = 1000
                 reason = b''
@@ -240,14 +242,14 @@ def recv_entire_frame(ws):
 
                     if _frag_type == _TEXT:
                         _frag_buffer = []
-                        utf_str = _frag_decoder.decode(frame, final = False)
+                        utf_str = _frag_decoder.decode(frame, final=False)
                         if utf_str:
                             _frag_buffer.append(utf_str)
                     else:
                         _frag_buffer = bytearray()
                         _frag_buffer.extend(frame)
 
-                    if len(_frag_buffer) > _WEBSOCKET_MAX_PAYLOAD:
+                    if len(_frag_buffer) > max_payload:
                         raise ClosedException(1009, 'payload too large')
                 else:
                     # got a fragment packet without a start
@@ -255,13 +257,13 @@ def recv_entire_frame(ws):
                         raise ClosedException(1002, 'fragmentation protocol error')
 
                     if _frag_type == _TEXT:
-                        utf_str = _frag_decoder.decode(frame, final = False)
+                        utf_str = _frag_decoder.decode(frame, final=False)
                         if utf_str:
                             _frag_buffer.append(utf_str)
                     else:
                         _frag_buffer.extend(frame)
 
-                    if len(_frag_buffer) > _WEBSOCKET_MAX_PAYLOAD:
+                    if len(_frag_buffer) > max_payload:
                         raise ClosedException(1009, 'payload too large')
             else:
 
@@ -270,17 +272,22 @@ def recv_entire_frame(ws):
                         raise ClosedException(1002, 'fragmentation protocol error')
 
                     if _frag_type == _TEXT:
-                        utf_str = _frag_decoder.decode(frame, final = True)
+                        utf_str = _frag_decoder.decode(frame, final=True)
                         _frag_buffer.append(utf_str)
                         _frag_buffer = ''.join(_frag_buffer)
                     else:
                         _frag_buffer.extend(frame)
                         _frag_buffer = bytes(_frag_buffer)
 
-                    if len(_frag_buffer) > _WEBSOCKET_MAX_PAYLOAD:
+                    if len(_frag_buffer) > max_payload:
                         raise ClosedException(1009, 'payload too large')
 
-                    return _frag_buffer
+                    ws._queue.put_nowait(_frag_buffer)
+
+                    _frag_start = False
+                    _frag_type = _BINARY
+                    _frag_buffer = None
+                    _frag_decoder.reset()
 
                 elif opcode == _PING:
                     yield from send_frame(ws.writer, False, _PONG, frame)
@@ -298,31 +305,34 @@ def recv_entire_frame(ws):
                         except Exception as exp:
                             raise ClosedException(1002, 'invalid utf-8 payload')
 
-                    return frame
+                    ws._queue.put_nowait(frame)
+
+                    _frag_start = False
+                    _frag_type = _BINARY
+                    _frag_buffer = None
+                    _frag_decoder.reset()
 
     except BaseException as exp:
         ws.writer.close()
-
         status = 1002
-        reason = b''
         if isinstance(exp, ClosedException):
             status = exp.status
             reason = exp.reason
         else:
             reason = str(exp)
-
         ws.status = status
         ws.reason = reason
+        ws._closed = True
+        ws._queue.put_nowait(None)
 
-        return None
 
 @asyncio.coroutine
-def connect(wsurl, *, loop = None, limit = None, **kwds):
+def connect(wsurl, **kwds):
     """
     Connect to a websocket server. Connect will automatically carry out a websocket handshake.
 
     :param wsurl: Websocket uri. See `RFC6455 URIs. <https://tools.ietf.org/html/rfc6455#section-3>`_
-    :param kwargs: See `open_connection. \
+    :param kwds: See `open_connection. \
         <https://docs.python.org/3.4/library/asyncio-stream.html#asyncio.open_connection>`_
     :return: :class:`Websocket` object on success.
     :raises Exception: When there is an error during connection or handshake.
@@ -330,68 +340,120 @@ def connect(wsurl, *, loop = None, limit = None, **kwds):
     writer = None
     try:
         url = urllib.parse.urlparse(wsurl)
-
         port = 80
         if url.port:
             port = url.port
-
-        use_ssl = False
         if url.scheme.startswith('wss://'):
-            use_ssl = True
             if not url.port:
                 port = 443
 
-        reader, writer = yield from asyncio.open_connection(host = url.hostname, port = port, loop = loop, **kwds)
-        response = yield from handshake_with_server(reader, writer, url)
+        reader, writer = yield from asyncio.open_connection(host=url.hostname, port=port, **kwds)
+        response = yield from handshake_with_server(reader, writer, url, **kwds)
         websocket = Websocket(reader, writer)
         websocket._mask = True
         websocket.reponse = response
+        websocket._recv_task = asyncio.get_event_loop().create_task(
+            recv_entire_frame(websocket, **kwds))
         return websocket
-
     except BaseException as exp:
         if writer:
             writer.close()
         raise exp
 
+
+class WSServer(object):
+
+    def __init__(self):
+        self._server = None
+        self._tasks = {}
+
+    def add_task(self, task, value):
+        self._tasks[task] = value
+
+    def remove_task(self, task):
+        del self._tasks[task]
+
+    @property
+    def server(self):
+        return self._server
+
+    @server.setter
+    def server(self, value):
+        self._server = value
+
+    def close(self):
+        self._server.close()
+
+        for task in self._tasks:
+            task.cancel()
+
+    @asyncio.coroutine
+    def wait_closed(self):
+        yield from self._server.wait_closed()
+
+        tasks = self._tasks.keys()
+        if len(tasks) > 0:
+            yield from asyncio.wait(tasks)
+
+
 @asyncio.coroutine
-def start_server(func, host = None, port = None, *, loop = None, limit = None, auto_handshake = True, **kwds):
+def start_server(func, host=None, port=None, **kwds):
     """
     Start a websocket server, with a callback for each client connected.
 
     :param func: Called with a :class:`Websocket` parameter when a client connects and handshake is successful.
-    :param auto_handshake: The handshake with a client occurs automatically by default. The only way to handle the handshake manually \
-        is to set ``auto_handshake`` to ``False``. This means that the server application must \
-        call :meth:`~asyncws.Websocket.handshake` on the websocket after it is passed to ``func``.
-    :param kwags: See `start_server <https://docs.python.org/3.4/library/asyncio-stream.html#asyncio.start_server>`_
-    :return: The return value is the same as `start_server <https://docs.python.org/3.4/library/asyncio-stream.html#asyncio.start_server>`_
+    :param kwds: See `start_server <https://docs.python.org/3.4/library/asyncio-stream.html#asyncio.start_server>`_
+    :return: The return value is the same as `start_server \
+    <https://docs.python.org/3.4/library/asyncio-stream.html#asyncio.start_server>`_
     """
-    server = yield from asyncio.start_server(lambda r, w: handle_server_websocket(r, w, func, auto_handshake), host, port, **kwds)
-    return server
+    ws_server = WSServer()
+    server = yield from asyncio.start_server(
+        lambda r, w: handle_server_websocket(r, w, ws_server, func), host, port, **kwds)
+    ws_server.server = server
+    return ws_server
+
 
 @asyncio.coroutine
-def handle_server_websocket(reader, writer, func, auto_handshake):
+def handle_server_websocket(reader, writer, server, func, **kwds):
     try:
         websocket = Websocket(reader, writer)
-        if auto_handshake:
-            request = yield from asyncio.wait_for(handshake_with_client(reader, writer), timeout = _WEBSOCKET_HANDSHAKE_TIMEOUT)
+        handshake_timeout = kwds.get('handshake_timeout', 12)
+        try:
+            request = yield from asyncio.wait_for(
+                handshake_with_client(reader, writer, **kwds), timeout=handshake_timeout)
             websocket.request = request
-        yield from func(websocket)
-    except BaseException as exp:
+        except BaseException as e:
+            websocket._closed = True
+
+        def task_done(task):
+            server.remove_task(task)
+
+        recv_task = asyncio.ensure_future(recv_entire_frame(websocket, **kwds))
+        server.add_task(recv_task, websocket)
+        recv_task.add_done_callback(task_done)
+
+        func_task = asyncio.ensure_future(func(websocket))
+        server.add_task(func_task, websocket)
+        func_task.add_done_callback(task_done)
+
+        yield from func_task
+
+    except BaseException:
         pass
     finally:
         writer.close()
 
 
 @asyncio.coroutine
-def handshake_with_server(reader, writer, parsed_url):
-
+def handshake_with_server(reader, writer, parsed_url, **kwds):
+    max_header = kwds.get('max_header', 65536)
     try:
         rand = bytes(random.getrandbits(8) for _ in range(16))
         key = base64.b64encode(rand).decode()
 
         values = ''
         if parsed_url.query:
-            values = '?' + parsed_url.query
+            values = '?{0}'.format(parsed_url.query)
 
         handshake = _REQUEST % {'path': parsed_url.path + values, 'host_port': parsed_url.netloc, 'key': key}
 
@@ -405,7 +467,7 @@ def handshake_with_server(reader, writer, parsed_url):
                 raise ProtocolError('no data from endpoint')
 
             header_buffer.extend(header)
-            if len(header_buffer) > _WEBSOCKET_MAX_HEADER:
+            if len(header_buffer) > max_header:
                 raise ProtocolError('header too large')
 
             if header in b'\r\n':
@@ -429,7 +491,8 @@ def handshake_with_server(reader, writer, parsed_url):
 
 
 @asyncio.coroutine
-def handshake_with_client(reader, writer):
+def handshake_with_client(reader, writer, **kwds):
+    max_header = kwds.get('max_header', 65536)
     try:
         header_buffer = bytearray()
         while True:
@@ -438,30 +501,30 @@ def handshake_with_client(reader, writer):
                 raise ClosedException(1002, 'no data from endpoint')
 
             header_buffer.extend(header)
-            if len(header_buffer) > _WEBSOCKET_MAX_HEADER:
+            if len(header_buffer) > max_header:
                 raise ClosedException(1009, 'header too large')
 
             if header in b'\r\n':
                 break
 
         request = HTTPRequest(header_buffer)
-        key = request.headers['sec-websocket-key']
+        key = request.headers.get('sec-websocket-key', None)
         if key is None:
             raise ClosedException(1002, 'Sec-WebSocket-Key does not exist')
 
         digest = base64.b64encode(hashlib.sha1((key + _GUID_STRING).encode('utf-8')).digest())
-        handshake = _RESPONSE % { 'accept_string':  digest.decode('utf-8') }
+        handshake = _RESPONSE % {'accept_string': digest.decode('utf-8')}
         writer.write(handshake.encode('utf-8'))
         yield from writer.drain()
         return request
 
     except asyncio.CancelledError as excp:
-        response = 'HTTP/1.1 400 Bad Request\r\n\r\n' + str(excp)
+        response = 'HTTP/1.1 400 Bad Request\r\n\r\n{0}'.format(str(excp))
         writer.write(response.encode('utf-8'))
         writer.close()
 
     except BaseException as exp:
-        response = 'HTTP/1.1 400 Bad Request\r\n\r\n' + str(exp)
+        response = 'HTTP/1.1 400 Bad Request\r\n\r\n{0}'.format(str(exp))
         writer.write(response.encode('utf-8'))
         writer.close()
 
@@ -470,10 +533,11 @@ def handshake_with_client(reader, writer):
 
         raise exp
 
+
 @asyncio.coroutine
-def send_close_frame(writer, status = 1000, reason = '', mask = False):
+def send_close_frame(writer, status=1000, reason='', mask=False):
     close_msg = bytearray()
-    close_msg.extend(struct.pack("!H", status))
+    close_msg.extend(struct.pack('!H', status))
     if isinstance(reason, str):
         close_msg.extend(reason.encode('utf-8'))
     else:
@@ -481,9 +545,17 @@ def send_close_frame(writer, status = 1000, reason = '', mask = False):
 
     yield from send_frame(writer, False, _CLOSE, close_msg, mask, True)
 
-@asyncio.coroutine
-def send_frame(writer, fin, opcode, data, mask = False, flush = False):
 
+native_byteorder = sys.byteorder
+def mask_data(mask, data):
+    datalen = len(data)
+    data = int.from_bytes(data, native_byteorder)
+    mask = int.from_bytes(mask * (datalen // 4) + mask[: datalen % 4], native_byteorder)
+    return (data ^ mask).to_bytes(datalen, native_byteorder)
+
+
+@asyncio.coroutine
+def send_frame(writer, fin, opcode, data, mask=False, flush=False):
     header = bytearray()
     b1 = 0
     b2 = 0
@@ -501,21 +573,21 @@ def send_frame(writer, fin, opcode, data, mask = False, flush = False):
     if length <= 125:
         b2 |= length
         header.append(b2)
-    elif length >= 126 and length <= 65535:
+    elif 126 <= length <= 65535:
         b2 |= 126
         header.append(b2)
-        header.extend(struct.pack("!H", length))
+        header.extend(struct.pack('!H', length))
     else:
         b2 |= 127
         header.append(b2)
-        header.extend(struct.pack("!Q", length))
+        header.extend(struct.pack('!Q', length))
 
     writer.write(header)
 
     if mask:
         mask_bits = struct.pack('!I', random.getrandbits(32))
         writer.write(mask_bits)
-        data = bytes(b ^ mask_bits[i % 4] for i, b in enumerate(data))
+        data = mask_data(mask_bits, data)
 
     if length > 0:
         writer.write(data)
@@ -523,8 +595,9 @@ def send_frame(writer, fin, opcode, data, mask = False, flush = False):
     if flush:
         yield from writer.drain()
 
+
 @asyncio.coroutine
-def recv_frame(reader):
+def recv_frame(reader, max_payload):
 
     h1, h2 = yield from reader.readexactly(2)
 
@@ -567,7 +640,7 @@ def recv_frame(reader):
     else:
         raise ClosedException(1002, 'unknown payload length')
 
-    if length > _WEBSOCKET_MAX_PAYLOAD:
+    if length > max_payload:
         raise ClosedException(1009, 'payload too large')
 
     if mask == 128:
@@ -579,7 +652,7 @@ def recv_frame(reader):
     if length > 0:
         payload = yield from reader.readexactly(length)
         if mask:
-            mask_payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            mask_payload = mask_data(mask, payload)
             payload = mask_payload
 
     return bool(fin), opcode, length, payload
