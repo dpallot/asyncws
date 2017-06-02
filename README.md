@@ -11,7 +11,7 @@ It implements [RFC 6455](https://tools.ietf.org/html/rfc6455), passes the [Autob
 To install the package: ``python3 setup.py install``
 
 <h3>API Documentation</h3>
-Refer to [API Documentation](https://async-websockets.readthedocs.org/) for more information. 
+Refer to [API Documentation](https://async-websockets.readthedocs.io/) for more information. 
 
 <h3>Example</h3>
 
@@ -22,34 +22,50 @@ import asyncws
 
 @asyncio.coroutine
 def echo(websocket):
-     while True:
+    while True:
         frame = yield from websocket.recv()
         if frame is None:
             break
         yield from websocket.send(frame)
 
-server = asyncws.start_server(echo, '127.0.0.1', 8000)
-asyncio.get_event_loop().run_until_complete(server)
-asyncio.get_event_loop().run_forever()
+
+loop = asyncio.get_event_loop()
+server = loop.run_until_complete(
+    asyncws.start_server(echo, '127.0.0.1', 8000))
+try:
+    loop.run_forever()
+except KeyboardInterrupt as e:
+    server.close()
+    loop.run_until_complete(server.wait_closed())
+finally:
+    loop.close()
 `````
 
 Corresponding echo client:
 `````python
- import asyncio
- import asyncws
+import asyncio
+import asyncws
 
- @asyncio.coroutine
- def echo():
-     websocket = yield from asyncws.connect('ws://localhost:8000')
-     while True:
-         yield from websocket.send('hello')
-         echo = yield from websocket.recv()
-         if echo is None:
-             break
-         print (echo)
+@asyncio.coroutine
+def echo(websocket):
+    while True:
+        yield from websocket.send('hello')
+        msg = yield from websocket.recv()
+        if msg is None:
+            break
+        print(msg)
 
- asyncio.get_event_loop().run_until_complete(echo())
- asyncio.get_event_loop().close()
+
+loop = asyncio.get_event_loop()
+websocket = loop.run_until_complete(
+    asyncws.connect('ws://localhost:8000'))
+try:
+    loop.run_until_complete(echo(websocket))
+except KeyboardInterrupt as e:
+    loop.run_until_complete(websocket.close())
+    loop.run_until_complete(websocket.wait_closed())
+finally:
+    loop.close()
 `````
 <h3>SSL/TSL Example</h3>
 
@@ -72,13 +88,22 @@ def echo(websocket):
             break
         yield from websocket.send(frame)
 
+
 ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
 ssl_context.check_hostname = False
 ssl_context.load_cert_chain('example.crt', 'example.key')
 
-server = asyncws.start_server(echo, '127.0.0.1', 8000, ssl = ssl_context)
-asyncio.get_event_loop().run_until_complete(server)
-asyncio.get_event_loop().run_forever()
+loop = asyncio.get_event_loop()
+loop.set_debug(True)
+server = loop.run_until_complete(
+    asyncws.start_server(echo, '127.0.0.1', 8000, ssl=ssl_context))
+try:
+    loop.run_forever()
+except KeyboardInterrupt as e:
+    server.close()
+    loop.run_until_complete(server.wait_closed())
+finally:
+    loop.close()
 `````
 
 An SSLContext is needed to secure the client-side of the socket:
@@ -89,21 +114,30 @@ import asyncws
 import ssl
 
 @asyncio.coroutine
-def echo():
-    ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-    ssl_context.check_hostname = False
-    ssl_context.load_verify_locations('example.crt')
-
-    websocket = yield from asyncws.connect('wss://localhost:8000', ssl = ssl_context)
+def echo(websocket):
     while True:
         yield from websocket.send('hello')
         echo = yield from websocket.recv()
         if echo is None:
             break
-        print (echo)
+        print(echo)
 
-asyncio.get_event_loop().run_until_complete(echo())
-asyncio.get_event_loop().close()
+
+ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
+ssl_context.load_verify_locations('example.crt')
+
+loop = asyncio.get_event_loop()
+websocket = loop.run_until_complete(
+    asyncws.connect('wss://localhost:8000', ssl=ssl_context))
+try:
+    loop.run_until_complete(echo(websocket))
+except KeyboardInterrupt as e:
+    loop.run_until_complete(websocket.close())
+    loop.run_until_complete(websocket.wait_closed())
+finally:
+    loop.close()
 `````
 
 Now you have a fully encrypted websocket connection!
